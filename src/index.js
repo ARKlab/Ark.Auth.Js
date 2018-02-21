@@ -1,5 +1,5 @@
 import { WebAuth } from "auth0-js";
-import { always, compose, merge } from "ramda";
+import { always, compose, merge, prop } from "ramda";
 import { Observable } from "rxjs";
 import either from "crocks/pointfree/either";
 import {
@@ -104,10 +104,15 @@ export default function CreateAuthModule({
       redirectUri
     });
   }
+
+  // () as placeholder for audience
+  const getToken = () => getUserFromStorage.map(prop("access_token"));
+
   return {
     initialize,
     logout,
     login,
-    maintainLogin
+    maintainLogin,
+    getToken
   };
 }
