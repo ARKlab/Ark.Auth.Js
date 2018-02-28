@@ -106,7 +106,7 @@ export default function CreateAuthModule({
   }
 
   // () as placeholder for audience
-  const getToken = () => getUserFromStorage.map(prop("access_token"));
+  const getToken = () => getUserFromStorage.map(prop("accessToken"));
 
   return {
     initialize,
