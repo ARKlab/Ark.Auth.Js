@@ -1,5 +1,5 @@
 import { WebAuth } from "auth0-js";
-import { always, compose, merge, prop } from "ramda";
+import { always, compose, merge, prop, objOf, identity } from "ramda";
 import { Observable } from "rxjs";
 import either from "crocks/pointfree/either";
 import {
@@ -106,7 +106,18 @@ export default function CreateAuthModule({
   }
 
   // () as placeholder for audience
-  const getToken = () => getUserFromStorage.map(prop("accessToken"));
+  const getToken = api =>
+    getUserFromStorage
+      .map(api ? prop(api) : identity)
+      .flatMap(validateUser)
+      .catch(() =>
+        checkSession({ audience: api })
+          .map(objOf(api))
+          .zip(getUserFromStorage, merge)
+          .flatMap(storeUser)
+          .map(prop(api))
+      )
+      .map(prop("accessToken"));
 
   return {
     initialize,
