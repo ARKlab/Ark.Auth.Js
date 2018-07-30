@@ -1,6 +1,15 @@
 import { WebAuth } from "auth0-js";
 import { always, compose, merge, prop, objOf, identity } from "ramda";
-import { Observable } from "rxjs";
+import { Observable, of, throwError, empty } from "rxjs";
+import {
+  delay,
+  startWith,
+  repeatWhen,
+  mergeMap,
+  catchError,
+  map,
+  zip
+} from "rxjs/operators";
 import either from "crocks/pointfree/either";
 import {
   fromNullable,
@@ -10,7 +19,7 @@ import {
   callNextComplete
 } from "./helpers";
 
-export default function CreateAuthModule({
+export default function createAuthModule({
   clientID,
   domain,
   redirectUri,
@@ -56,9 +65,9 @@ export default function CreateAuthModule({
           .map(user => merge(user, profile))
           .either(callError(obs), callNextComplete(obs));
       })
-    ).catch(Observable.of);
+    ).pipe(catchError(of));
 
-  const authenticate = checkSession().flatMap(getUserInfo);
+  const authenticate = checkSession().pipe(mergeMap(getUserInfo));
 
   const getUserFromStorage = Observable.create(obs => {
     const user = JSON.parse(localStorage.getItem("user")) || {};
@@ -74,25 +83,31 @@ export default function CreateAuthModule({
       obs.complete();
     });
 
-  const initialize = parseHash
-    .flatMap(either(() => getUserFromStorage, getUserInfo))
-    .flatMap(validateUser)
-    .catch(err =>
+  const initialize = parseHash.pipe(
+    mergeMap(either(() => getUserFromStorage, getUserInfo)),
+    mergeMap(validateUser),
+    catchError(err =>
       err.cata({
-        Callback: compose(Observable.throw, Failures.Callback),
-        SSO: () => Observable.throw(Failures.SSO),
+        Callback: compose(
+          throwError,
+          Failures.Callback
+        ),
+        SSO: () => throwError(Failures.SSO),
         Expired: () => authenticate
       })
-    )
-    .flatMap(storeUser);
+    ),
+    mergeMap(storeUser)
+  );
 
-  const maintainLogin = initialize
-    .flatMap(user =>
-      Observable.empty()
-        .delay(new Date(user.expiresAt - 10000))
-        .startWith(user)
-    )
-    .repeatWhen(x => x);
+  const maintainLogin = initialize.pipe(
+    mergeMap(user =>
+      empty().pipe(
+        delay(new Date(user.expiresAt - 10000)),
+        startWith(user)
+      )
+    ),
+    repeatWhen(x => x)
+  );
 
   function logout({ returnUrl }) {
     const logoutFn = auth0.logout.bind(auth0, { returnTo: returnUrl });
@@ -107,17 +122,19 @@ export default function CreateAuthModule({
 
   // () as placeholder for audience
   const getToken = api =>
-    getUserFromStorage
-      .map(api ? prop(api) : identity)
-      .flatMap(validateUser)
-      .catch(() =>
-        checkSession({ audience: api })
-          .map(objOf(api))
-          .zip(getUserFromStorage, merge)
-          .flatMap(storeUser)
-          .map(prop(api))
-      )
-      .map(prop("accessToken"));
+    getUserFromStorage.pipe(
+      map(api ? prop(api) : identity),
+      mergeMap(validateUser),
+      catchError(() =>
+        checkSession({ audience: api }).pipe(
+          map(objOf(api)),
+          zip(getUserFromStorage, merge),
+          mergeMap(storeUser),
+          map(prop(api))
+        )
+      ),
+      map(prop("accessToken"))
+    );
 
   return {
     initialize,

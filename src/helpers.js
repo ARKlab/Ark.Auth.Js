@@ -1,5 +1,6 @@
 import { taggedSum } from "daggy";
 import { Observable } from "rxjs";
+import { mapTo } from "rxjs/operators";
 import Either from "crocks/Either";
 import isNil from "crocks/predicates/isNil";
 
@@ -22,7 +23,7 @@ export const validateToken = exp =>
   });
 
 export const validateUser = user =>
-  validateToken(user.expiresAt || 0).mapTo(user);
+  validateToken(user.expiresAt || 0).pipe(mapTo(user));
 
 export const callNext = obj => val => obj.next(val);
 export const callError = obj => val => obj.error(val);
