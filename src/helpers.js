@@ -3,6 +3,7 @@ import { Observable } from "rxjs";
 import { mapTo } from "rxjs/operators";
 import Either from "crocks/Either";
 import isNil from "crocks/predicates/isNil";
+import * as R from "ramda";
 
 const { Left, Right } = Either;
 export const fromNullable = x => isNil(x) ? Left(x) : Right(x);
@@ -22,6 +23,10 @@ export const validateToken = exp =>
     return obs.complete();
   });
 
+export const calcExipryTime = user =>
+  R.merge(user, {
+    expiresAt: Date.now() + user.expiresIn * 1000
+  });
 export const validateUser = user =>
   validateToken(user.expiresAt || 0).pipe(mapTo(user));
 

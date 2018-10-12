@@ -16,7 +16,8 @@ import {
   Failures,
   validateUser,
   callError,
-  callNextComplete
+  callNextComplete,
+  calcExipryTime
 } from "./helpers";
 
 export default function createAuthModule({
@@ -41,6 +42,7 @@ export default function createAuthModule({
 
       errCheck
         .swap(always(payloadCheck), Failures.Callback)
+        .map(calcExipryTime)
         .either(callError(obs), callNextComplete(obs));
     })
   );
@@ -50,9 +52,7 @@ export default function createAuthModule({
       auth0.checkSession(options, (err, result) =>
         fromNullable(err)
           .swap(always(result), always(Failures.SSO))
-          .map(res =>
-            merge(res, { expiresAt: Date.now() + result.expiresIn * 1000 })
-          )
+          .map(calcExipryTime)
           .either(callError(obs), callNextComplete(obs))
       )
     );

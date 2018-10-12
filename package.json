@@ -1,6 +1,6 @@
 {
   "name": "ark-auth-js",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "",
   "main": "dist/index.js",
   "module": "_esm/index.js",
@@ -8,7 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "babel src --no-babelrc --out-dir dist --presets=env",
     "build-esm": "babel src --out-dir _esm",
-    "version": "npm run build && npm run build && git add -f dist _esm"
+    "version": "npm run build && npm run build-esm && git add -f dist _esm"
   },
   "keywords": [],
   "author": "",
