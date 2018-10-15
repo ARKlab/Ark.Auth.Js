@@ -1,5 +1,5 @@
 import { WebAuth } from "auth0-js";
-import { always, compose, merge, prop, objOf, identity } from "ramda";
+import * as R from "ramda";
 import { Observable, of, throwError, empty } from "rxjs";
 import {
   delay,
@@ -41,8 +41,8 @@ export default function createAuthModule({
       const payloadCheck = fromNullable(payload);
 
       errCheck
-        .swap(always(payloadCheck), Failures.Callback)
-        .map(calcExipryTime)
+        .swap(R.always(payloadCheck), Failures.Callback)
+        .map(R.map(calcExipryTime))
         .either(callError(obs), callNextComplete(obs));
     })
   );
@@ -51,7 +51,7 @@ export default function createAuthModule({
     Observable.create(obs =>
       auth0.checkSession(options, (err, result) =>
         fromNullable(err)
-          .swap(always(result), always(Failures.SSO))
+          .swap(R.always(result), R.always(Failures.SSO))
           .map(calcExipryTime)
           .either(callError(obs), callNextComplete(obs))
       )
@@ -61,8 +61,8 @@ export default function createAuthModule({
     Observable.create(obs =>
       auth0.client.userInfo(result.accessToken, (err, profile) => {
         fromNullable(err)
-          .swap(always(result), always(result))
-          .map(user => merge(user, profile))
+          .swap(R.always(result), R.always(result))
+          .map(user => R.merge(user, profile))
           .either(callError(obs), callNextComplete(obs));
       })
     ).pipe(catchError(of));
@@ -88,7 +88,7 @@ export default function createAuthModule({
     mergeMap(validateUser),
     catchError(err =>
       err.cata({
-        Callback: compose(
+        Callback: R.compose(
           throwError,
           Failures.Callback
         ),
@@ -123,17 +123,17 @@ export default function createAuthModule({
   // () as placeholder for audience
   const getToken = api =>
     getUserFromStorage.pipe(
-      map(api ? prop(api) : identity),
+      map(api ? R.prop(api) : R.identity),
       mergeMap(validateUser),
       catchError(() =>
         checkSession({ audience: api }).pipe(
-          map(objOf(api)),
-          zip(getUserFromStorage, merge),
+          map(R.objOf(api)),
+          zip(getUserFromStorage, R.merge),
           mergeMap(storeUser),
-          map(prop(api))
+          map(R.prop(api))
         )
       ),
-      map(prop("accessToken"))
+      map(R.prop("accessToken"))
     );
 
   return {
