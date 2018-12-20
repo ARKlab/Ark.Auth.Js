@@ -114,10 +114,12 @@ export default function createAuthModule({
     storeUser({}).subscribe(logoutFn);
   }
 
-  function login() {
-    auth0.authorize({
-      redirectUri
-    });
+  function login(options) {
+    auth0.authorize(
+      Object.assign({}, options, {
+        redirectUri
+      })
+    );
   }
 
   // () as placeholder for audience
