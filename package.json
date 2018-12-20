@@ -1,6 +1,6 @@
 {
   "name": "ark-auth-js",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "",
   "main": "src/index.js",
   "module": "_esm/index.js",
