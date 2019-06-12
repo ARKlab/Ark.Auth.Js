@@ -32,32 +32,41 @@ import { constVoid } from "fp-ts/lib/function";
 
 const seqTask = sequenceT(taskEither);
 
-type Failures =
+export type FailuresType =
   | { type: "Callback"; error: Auth0Error }
   | { type: "SSO"; error: Auth0Error }
   | { type: "UserInfo"; error: Auth0DecodedHash }
   | { type: "UserStore" }
   | { type: "ExpiryFailure"; result: Auth0DecodedHash };
 
-const Failures = {
-  Callback: (error: Auth0Error): Failures => ({ type: "Callback", error }),
-  SSO: (error: Auth0Error): Failures => ({ type: "SSO", error }),
-  UserInfo: (error: Auth0DecodedHash): Failures => ({
+export const Failures = {
+  Callback: (error: Auth0Error): FailuresType => ({ type: "Callback", error }),
+  SSO: (error: Auth0Error): FailuresType => ({ type: "SSO", error }),
+  UserInfo: (error: Auth0DecodedHash): FailuresType => ({
     type: "UserInfo",
     error
   }),
-  UserStore: (): Failures => ({ type: "UserStore" }),
-  ExpiryFailure: (result: Auth0DecodedHash): Failures => ({
+  UserStore: (): FailuresType => ({ type: "UserStore" }),
+  ExpiryFailure: (result: Auth0DecodedHash): FailuresType => ({
     type: "ExpiryFailure",
     result
   }),
   fold: <A>(
-    callback: (err: Auth0Error) => A,
-    sso: (error: Auth0Error) => A,
-    userStore: () => A,
-    expiryFailure: (error: Auth0DecodedHash) => A,
-    userInfo: (error: Auth0DecodedHash) => A
-  ) => (f: Failures): A => {
+    f: FailuresType,
+    {
+      callback,
+      sso,
+      userStore,
+      expiryFailure,
+      userInfo
+    }: {
+      callback: (err: Auth0Error) => A;
+      sso: (error: Auth0Error) => A;
+      userStore: () => A;
+      expiryFailure: (error: Auth0DecodedHash) => A;
+      userInfo: (error: Auth0DecodedHash) => A;
+    }
+  ): A => {
     switch (f.type) {
       case "Callback":
         return callback(f.error);
@@ -81,6 +90,7 @@ type authModuleParams = {
   clientID: string;
   redirectUri: string;
   localStorageKey?: string;
+  scope?: string;
 };
 
 const validateToken = <A>(authResult: A & { exp: number }) =>
@@ -89,15 +99,15 @@ const validateToken = <A>(authResult: A & { exp: number }) =>
     .map(payload => (payload.exp - 10) * 1000)
     .chain(exp => (exp > Date.now() ? some(authResult) : none));
 
-const getPermissions = (accessToken: string): string[] =>
-  fromNullableOption(new IdTokenVerifier({}).decode(accessToken))
+const getPayload = (token: string): string[] =>
+  fromNullableOption(new IdTokenVerifier({}).decode(token))
+    .chain(x => (x instanceof Error ? none : some(x)))
     .map(token => token.payload)
-    .chain(payload => fromNullableOption(payload.permissions))
     .getOrElse([]);
 
 const getExpiry = (
   authResult: Auth0DecodedHash
-): TaskEither<Failures, number> => {
+): TaskEither<FailuresType, number> => {
   const expiryNullable = fromNullable(Failures.ExpiryFailure(authResult));
 
   return fromEither(
@@ -118,7 +128,7 @@ export default function CreateAuthModule(options: authModuleParams) {
     new IOEither(storage.getUser.map(fromOptionL(Failures.UserStore)))
   );
 
-  const storeUser = (user: User): TaskEither<Failures, User> =>
+  const storeUser = (user: User): TaskEither<FailuresType, User> =>
     getUser
       .map(stored => ({
         ...stored,
@@ -130,7 +140,7 @@ export default function CreateAuthModule(options: authModuleParams) {
 
   const userInfo = (
     authResult: Auth0DecodedHash
-  ): TaskEither<Failures, Auth0UserProfile> => {
+  ): TaskEither<FailuresType, Auth0UserProfile> => {
     const checkNull = fromNullable(Failures.UserInfo(authResult));
 
     return fromEither(checkNull(authResult.idTokenPayload));
@@ -145,24 +155,23 @@ export default function CreateAuthModule(options: authModuleParams) {
   const logout = (returnTo: string) =>
     fromIO(storage.clearUser).chain(() => auth.logout(returnTo));
 
-  const login = auth.login;
+  const login = () => auth.login({ responseType: "token id_token" });
 
   const buildUser = (authResult: Auth0DecodedHash) =>
     seqTask(userInfo(authResult), getExpiry(authResult)).map(
       ([userInfo, exp]) => ({
         ...userInfo,
         exp,
-        permissions: getPermissions(authResult.accessToken || ""),
         tokens: {
           ui: {
             ...authResult,
-            exp,
-            permissions: getPermissions(authResult.accessToken || "")
+            accessTokenPayload: getPayload(authResult.accessToken || ""),
+            exp
           }
         }
       })
     );
-  const parseHash: TaskEither<Failures, User> = auth
+  const parseHash: TaskEither<FailuresType, User> = auth
     .parseHash()
     .map(fromNullable({ error: "No payload decoded" }))
     .chain(fromEither)
@@ -173,16 +182,19 @@ export default function CreateAuthModule(options: authModuleParams) {
   const checkSession = (options: CheckSessionOptions = {}) =>
     auth.checkSession(options).mapLeft(Failures.SSO);
 
-  const authenticate: TaskEither<Failures, User> = getUser
+  const authenticate: TaskEither<FailuresType, User> = getUser
     .map(user => validateToken(user.tokens.ui).map(() => user))
     .map(fromOptionL(Failures.UserStore))
     .chain(fromEither)
-    .alt(checkSession().chain(buildUser))
+    .alt(checkSession({ responseType: "token id_token" }).chain(buildUser))
     .chain(storeUser);
 
-  const getToken = (api = "ui"): TaskEither<Failures, string> =>
+  const getToken = ({
+    audience = "ui",
+    scope = ""
+  }): TaskEither<FailuresType, string> =>
     getUser
-      .map(user => user.tokens[api])
+      .map(user => user.tokens[audience])
       .map(token =>
         fromNullableOption(token)
           .chain(validateToken)
@@ -191,26 +203,30 @@ export default function CreateAuthModule(options: authModuleParams) {
       .map(fromOptionL(Failures.UserStore))
       .chain(fromEither)
       .alt(
-        checkSession({ audience: api })
+        checkSession({
+          audience,
+          scope,
+          responseType: "token"
+        })
           .chain(authResult =>
             seqTask(getUser, getExpiry(authResult)).map(([user, exp]) => ({
               ...user,
               tokens: {
                 ...user.tokens,
-                [api]: {
+                [audience]: {
                   ...authResult,
-                  exp,
-                  permissions: getPermissions(authResult.accessToken || "")
+                  accessTokenPayload: getPayload(authResult.accessToken || ""),
+                  exp
                 }
               }
             }))
           )
           .chain(storeUser)
-          .chain(() => getToken(api))
+          .chain(() => getToken({ audience, scope }))
       );
 
   const maintainLogin = (
-    onFail: (f: Failures) => void,
+    onFail: (f: FailuresType) => void,
     onSuccess: (u: User) => void
   ) => {
     let timeoutId: number;
@@ -235,16 +251,14 @@ export default function CreateAuthModule(options: authModuleParams) {
     logout,
     parseHash,
     getToken,
-    maintainLogin,
-    getPermissions
+    maintainLogin
   };
 }
 
 function Auth0Facade(options: authModuleParams) {
   const auth = new WebAuth({
     ...options,
-    scope: "openid email profile",
-    responseType: "token id_token"
+    scope: options.scope || "openid email profile"
   });
   return {
     parseHash: taskify<Auth0ParseHashError, Auth0DecodedHash | null>(cb =>
