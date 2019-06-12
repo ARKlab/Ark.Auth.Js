@@ -1,6 +1,6 @@
 {
   "name": "ark-auth-js",
-  "version": "2.2.3",
+  "version": "3.0.0",
   "description": "",
   "main": "dist/index.js",
   "scripts": {
@@ -12,12 +12,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/auth0-js": "^9.10.2",
     "auth0-js": "^9.10.2",
     "fp-ts": "^1.17.2",
     "idtoken-verifier": "^1.2.0",
     "typescript": "^3.4.5"
-  },
-  "devDependencies": {
-    "@types/auth0-js": "^9.10.2"
   }
 }
