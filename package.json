@@ -3,27 +3,21 @@
   "version": "2.2.3",
   "description": "",
   "main": "dist/index.js",
-  "module": "_esm/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "babel src --no-babelrc --out-dir dist --presets=env",
-    "build-esm": "babel src --out-dir _esm",
-    "version": "npm run build && npm run build-esm && git add -f dist _esm"
+    "build": "tsc",
+    "version": "npm run build && git add -f dist"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "devDependencies": {
-    "babel-cli": "^6.26.0",
-    "babel-preset-env": "^1.6.1",
-    "eslint": "^4.18.0",
-    "eslint-plugin-import": "^2.8.0"
-  },
   "dependencies": {
-    "auth0-js": "^9.2.3",
-    "crocks": "^0.8.6",
-    "daggy": "^1.2.0",
-    "ramda": "^0.25.0",
-    "rxjs": "^6.2.2"
+    "auth0-js": "^9.10.2",
+    "fp-ts": "^1.17.2",
+    "idtoken-verifier": "^1.2.0",
+    "typescript": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/auth0-js": "^9.10.2"
   }
 }
