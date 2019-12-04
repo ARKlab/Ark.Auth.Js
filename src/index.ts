@@ -15,7 +15,12 @@ import {
   fromIO,
   taskEither
 } from "fp-ts/lib/TaskEither";
-import { createStorage } from "./storage";
+import { createLocalStorage, AuthStorage } from "./storage";
+export {
+  createLocalStorage,
+  createInMemoryStorage,
+  AuthStorage
+} from "./storage";
 import { User } from "./types";
 import { IOEither } from "fp-ts/lib/IOEither";
 import {
@@ -91,6 +96,7 @@ type authModuleParams = {
   redirectUri: string;
   localStorageKey?: string;
   scope?: string;
+  storage?: AuthStorage;
 };
 
 const validateToken = <A>(authResult: A & { exp: number }) =>
@@ -122,7 +128,9 @@ const getExpiry = (
 
 export default function CreateAuthModule(options: authModuleParams) {
   const auth = Auth0Facade(options);
-  const storage = createStorage(options.localStorageKey);
+  const storage = options.storage
+    ? options.storage
+    : createLocalStorage(options.localStorageKey);
 
   const getUser = fromIOEither(
     new IOEither(storage.getUser.map(fromOptionL(Failures.UserStore)))
