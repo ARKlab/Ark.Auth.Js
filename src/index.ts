@@ -212,8 +212,8 @@ export default function CreateAuthModule(options: authModuleParams) {
       .chain(fromEither)
       .alt(
         checkSession({
-          audience,
-          scope,
+          ...(audience === "ui" ? {} : { audience }),
+          ...(scope === "" ? {} : { scope }),
           responseType: "token"
         })
           .chain(authResult =>
