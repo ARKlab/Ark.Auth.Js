@@ -5,37 +5,28 @@ import {
   CheckSessionOptions,
   Auth0UserProfile,
   Auth0Error,
-  AuthorizeOptions
+  AuthorizeOptions,
 } from "auth0-js";
-import {
-  taskify,
-  TaskEither,
-  fromIOEither,
-  fromEither,
-  fromIO,
-  taskEither
-} from "fp-ts/lib/TaskEither";
+import * as TE from "fp-ts/lib/TaskEither";
 import { createLocalStorage, AuthStorage } from "./storage";
 export {
   createLocalStorage,
   createInMemoryStorage,
-  AuthStorage
+  AuthStorage,
 } from "./storage";
 import { User } from "./types";
-import { IOEither } from "fp-ts/lib/IOEither";
-import {
-  fromNullable as fromNullableOption,
-  some,
-  none,
-  option
-} from "fp-ts/lib/Option";
-import { fromNullable, fromOptionL } from "fp-ts/lib/Either";
-import { IO } from "fp-ts/lib/IO";
+import * as O from "fp-ts/lib/Option";
+import * as E from "fp-ts/lib/Either";
+import * as IO from "fp-ts/lib/IO";
 import IdTokenVerifier from "idtoken-verifier";
 import { sequenceT } from "fp-ts/lib/Apply";
 import { constVoid } from "fp-ts/lib/function";
+import "oidc-client";
+import { UserManager, OidcMetadata } from "oidc-client";
+import { pipe } from "fp-ts/lib/pipeable";
 
-const seqTask = sequenceT(taskEither);
+const seqTask = sequenceT(TE.taskEither);
+const seqOption = sequenceT(O.option);
 
 export type FailuresType =
   | { type: "Callback"; error: Auth0Error }
@@ -49,12 +40,12 @@ export const Failures = {
   SSO: (error: Auth0Error): FailuresType => ({ type: "SSO", error }),
   UserInfo: (error: Auth0DecodedHash): FailuresType => ({
     type: "UserInfo",
-    error
+    error,
   }),
   UserStore: (): FailuresType => ({ type: "UserStore" }),
   ExpiryFailure: (result: Auth0DecodedHash): FailuresType => ({
     type: "ExpiryFailure",
-    result
+    result,
   }),
   fold: <A>(
     f: FailuresType,
@@ -63,7 +54,7 @@ export const Failures = {
       sso,
       userStore,
       expiryFailure,
-      userInfo
+      userInfo,
     }: {
       callback: (err: Auth0Error) => A;
       sso: (error: Auth0Error) => A;
@@ -86,7 +77,7 @@ export const Failures = {
       case "ExpiryFailure":
         return expiryFailure(f.result);
     }
-  }
+  },
 };
 
 type authModuleParams = {
@@ -100,58 +91,70 @@ type authModuleParams = {
 };
 
 const validateToken = <A>(authResult: A & { exp: number }) =>
-  option
-    .of(authResult)
-    .map(payload => (payload.exp - 10) * 1000)
-    .chain(exp => (exp > Date.now() ? some(authResult) : none));
+  pipe(
+    O.some(authResult),
+    O.map((payload) => (payload.exp - 10) * 1000),
+    O.chain((exp) => (exp > Date.now() ? O.some(authResult) : O.none))
+  );
 
-const getPayload = (token: string): string[] =>
-  fromNullableOption(new IdTokenVerifier({}).decode(token))
-    .chain(x => (x instanceof Error ? none : some(x)))
-    .map(token => token.payload)
-    .getOrElse([]);
+const getPayload = (token: string): any =>
+  pipe(
+    O.fromNullable(new IdTokenVerifier({}).decode(token)),
+    O.chain((x) => (x instanceof Error ? O.none : O.some(x))),
+    O.map((token) => token.payload),
+    O.getOrElse(() => [] as any)
+  );
 
 const getExpiry = (
-  authResult: Auth0DecodedHash
-): TaskEither<FailuresType, number> => {
-  const expiryNullable = fromNullable(Failures.ExpiryFailure(authResult));
+  authResult: IdpResponse
+): TE.TaskEither<FailuresType, number> => {
+  const expiryNullable = E.fromNullable(Failures.ExpiryFailure(authResult));
 
-  return fromEither(
-    expiryNullable(authResult.accessToken)
-      .chain(token => expiryNullable(new IdTokenVerifier({}).decode(token)))
-      .chain(payload => expiryNullable(payload.exp))
-      .alt(
-        expiryNullable(authResult.expiresIn).map(exp => exp + Date.now() / 1000)
+  return TE.fromEither(
+    pipe(
+      expiryNullable(authResult.accessToken),
+      E.chain((token) => expiryNullable(new IdTokenVerifier({}).decode(token))),
+      E.chain((payload) => expiryNullable(payload.exp)),
+      E.alt(() =>
+        pipe(
+          expiryNullable(authResult.expiresIn),
+          E.map((exp) => exp + Date.now() / 1000)
+        )
       )
+    )
   );
 };
 
-export default function CreateAuthModule(options: authModuleParams) {
-  const auth = Auth0Facade(options);
+export default function CreateAuthModule(
+  options: authModuleParams,
+  auth = Auth0Idp(options)
+) {
   const storage = options.storage
     ? options.storage
     : createLocalStorage(options.localStorageKey);
 
-  const getUser = fromIOEither(
-    new IOEither(storage.getUser.map(fromOptionL(Failures.UserStore)))
+  const getUser = TE.fromIOEither(
+    pipe(storage.getUser, IO.map(E.fromOption(Failures.UserStore)))
   );
 
-  const storeUser = (user: User): TaskEither<FailuresType, User> =>
-    getUser
-      .map(stored => ({
+  const storeUser = (user: User): TE.TaskEither<FailuresType, User> =>
+    pipe(
+      getUser,
+      TE.map((stored) => ({
         ...stored,
         ...user,
-        tokens: { ...stored.tokens, ...user.tokens }
-      }))
-      .alt(taskEither.of(user))
-      .chain(merged => fromIO(storage.setUser(merged).map(() => merged)));
+        tokens: { ...stored.tokens, ...user.tokens },
+      })),
+      TE.alt(() => TE.taskEither.of(user)),
+      TE.chainFirst((merged) => TE.rightIO(storage.setUser(merged)))
+    );
 
   const userInfo = (
     authResult: Auth0DecodedHash
-  ): TaskEither<FailuresType, Auth0UserProfile> => {
-    const checkNull = fromNullable(Failures.UserInfo(authResult));
+  ): TE.TaskEither<FailuresType, Auth0UserProfile> => {
+    const checkNull = E.fromNullable(Failures.UserInfo(authResult));
 
-    return fromEither(checkNull(authResult.idTokenPayload));
+    return TE.fromEither(checkNull(authResult.idTokenPayload));
   };
 
   // for userinfo endpoint
@@ -161,96 +164,123 @@ export default function CreateAuthModule(options: authModuleParams) {
   //   .alt(getUser);
 
   const logout = (returnTo: string) =>
-    fromIO(storage.clearUser).chain(() => auth.logout(returnTo));
+    pipe(
+      TE.rightIO(storage.clearUser),
+      TE.chain(() => auth.logout(returnTo))
+    );
 
   const login = () => auth.login({ responseType: "token id_token" });
 
-  const buildUser = (authResult: Auth0DecodedHash) =>
-    seqTask(userInfo(authResult), getExpiry(authResult)).map(
-      ([userInfo, exp]) => ({
+  const buildUser = (authResult: IdpResponse) =>
+    pipe(
+      seqTask(userInfo(authResult), getExpiry(authResult)),
+      TE.map(([userInfo, exp]) => ({
         ...userInfo,
         exp,
         tokens: {
           ui: {
             ...authResult,
             accessTokenPayload: getPayload(authResult.accessToken || ""),
-            exp
-          }
-        }
-      })
+            exp,
+          },
+        },
+      }))
     );
-  const parseHash: TaskEither<FailuresType, User> = auth
-    .parseHash()
-    .map(fromNullable({ error: "No payload decoded" }))
-    .chain(fromEither)
-    .mapLeft(Failures.Callback)
-    .chain(buildUser)
-    .chain(storeUser);
+  const parseHash: TE.TaskEither<FailuresType, User> = pipe(
+    auth.parseHash,
+    TE.mapLeft(Failures.Callback),
+    TE.chain(buildUser),
+    TE.chain(storeUser)
+  );
 
-  const checkSession = (options: CheckSessionOptions = {}) =>
-    auth.checkSession(options).mapLeft(Failures.SSO);
+  const checkSession = (options: checkSessionParams = {}) =>
+    pipe(auth.checkSession(options), TE.mapLeft(Failures.SSO));
 
-  const authenticate: TaskEither<FailuresType, User> = getUser
-    .map(user => validateToken(user.tokens.ui).map(() => user))
-    .map(fromOptionL(Failures.UserStore))
-    .chain(fromEither)
-    .alt(checkSession({ responseType: "token id_token" }).chain(buildUser))
-    .chain(storeUser);
+  const authenticate: TE.TaskEither<FailuresType, User> = pipe(
+    getUser,
+    TE.chain((user) =>
+      pipe(
+        validateToken(user.tokens.ui),
+        O.map(() => user),
+        TE.fromOption(Failures.UserStore)
+      )
+    ),
+    TE.alt(() =>
+      pipe(
+        checkSession({ responseType: "token id_token" }),
+        TE.chain(buildUser),
+        TE.chain(storeUser)
+      )
+    )
+  );
 
   const getToken = ({
     audience = "ui",
-    scope = ""
-  }): TaskEither<FailuresType, string> =>
-    getUser
-      .map(user => user.tokens[audience])
-      .map(token =>
-        fromNullableOption(token)
-          .chain(validateToken)
-          .chain(x => fromNullableOption(x.accessToken))
+    scope = "",
+  }): TE.TaskEither<FailuresType, string> =>
+    pipe(
+      getUser,
+      TE.map((user) => user.tokens[audience]),
+      TE.map((token) =>
+        pipe(
+          O.fromNullable(token),
+          O.chain(validateToken),
+          O.chain((x) => O.fromNullable(x.accessToken))
+        )
+      ),
+      TE.chain(TE.fromOption(Failures.UserStore)),
+      TE.alt(() =>
+        pipe(
+          checkSession({
+            ...(audience === "ui" ? {} : { audience }),
+            ...(scope === "" ? {} : { scope }),
+            responseType: "token",
+          }),
+          TE.chain((authResult) =>
+            pipe(
+              seqTask(getUser, getExpiry(authResult)),
+              TE.map(([user, exp]) => ({
+                ...user,
+                tokens: {
+                  ...user.tokens,
+                  [audience]: {
+                    ...authResult,
+                    accessTokenPayload: getPayload(
+                      authResult.accessToken || ""
+                    ),
+                    exp,
+                  },
+                },
+              })),
+              TE.chain(storeUser)
+            )
+          ),
+          TE.chain(() => getToken({ audience, scope }))
+        )
       )
-      .map(fromOptionL(Failures.UserStore))
-      .chain(fromEither)
-      .alt(
-        checkSession({
-          ...(audience === "ui" ? {} : { audience }),
-          ...(scope === "" ? {} : { scope }),
-          responseType: "token"
-        })
-          .chain(authResult =>
-            seqTask(getUser, getExpiry(authResult)).map(([user, exp]) => ({
-              ...user,
-              tokens: {
-                ...user.tokens,
-                [audience]: {
-                  ...authResult,
-                  accessTokenPayload: getPayload(authResult.accessToken || ""),
-                  exp
-                }
-              }
-            }))
-          )
-          .chain(storeUser)
-          .chain(() => getToken({ audience, scope }))
-      );
+    );
 
   const maintainLogin = (
     onFail: (f: FailuresType) => void,
     onSuccess: (u: User) => void
   ) => {
     let timeoutId: number;
-    return new IO(function Auth() {
-      authenticate.run().then(auth => {
-        auth.fold(onFail, onSuccess);
+    return function Auth() {
+      authenticate().then((auth) => {
+        E.fold(onFail, onSuccess)(auth);
 
-        auth.fold(constVoid, user => {
-          timeoutId = setTimeout(
-            Auth,
-            (user.tokens.ui.exp - 10) * 1000 - Date.now()
-          );
-        });
+        pipe(
+          auth,
+          E.fold(constVoid, (user) => {
+            timeoutId = setTimeout(
+              Auth,
+              (user.tokens.ui.exp - 10) * 1000 - Date.now()
+            );
+          })
+        );
       });
       return () => (timeoutId && clearTimeout(timeoutId)) || undefined;
-    });
+    };
   };
 
   return {
@@ -259,29 +289,133 @@ export default function CreateAuthModule(options: authModuleParams) {
     logout,
     parseHash,
     getToken,
-    maintainLogin
+    maintainLogin,
   };
 }
 
-function Auth0Facade(options: authModuleParams) {
+type checkSessionParams = {
+  audience?: string;
+  scope?: string;
+  responseType?: string;
+};
+
+type IdpResponse = {
+  idToken?: string;
+  idTokenPayload?: any;
+  accessToken: string;
+  expiresIn: number;
+};
+type Idp = {
+  parseHash: TE.TaskEither<{ error: string }, IdpResponse>;
+  checkSession: (
+    a: CheckSessionOptions
+  ) => TE.TaskEither<{ error: string }, IdpResponse>;
+  logout: (r: string) => TE.TaskEither<Auth0ParseHashError, void>;
+  login: (a?: AuthorizeOptions) => TE.TaskEither<Auth0ParseHashError, void>;
+};
+
+export function Auth0Idp(options: authModuleParams): Idp {
   const auth = new WebAuth({
     ...options,
-    scope: options.scope || "openid email profile"
+    scope: options.scope || "openid email profile",
   });
+  const parseHash = TE.taskify<Auth0ParseHashError, Auth0DecodedHash | null>(
+    (cb) => auth.parseHash(cb)
+  );
   return {
-    parseHash: taskify<Auth0ParseHashError, Auth0DecodedHash | null>(cb =>
-      auth.parseHash(cb)
+    parseHash: pipe(
+      parseHash(),
+      TE.map(E.fromNullable({ error: "No Payload Decoded" })),
+      TE.chain(TE.fromEither),
+      TE.chain((res) =>
+        pipe(
+          seqOption(
+            O.fromNullable(res.accessToken),
+            O.fromNullable(res.expiresIn)
+          ),
+          TE.fromOption(() => ({ error: "Payload has missing fields" })),
+          TE.map(([token, exp]) => ({
+            ...res,
+            accessToken: token,
+            expiresIn: exp,
+          }))
+        )
+      )
     ),
-    checkSession: taskify<CheckSessionOptions, Auth0Error, Auth0DecodedHash>(
+    checkSession: TE.taskify<CheckSessionOptions, Auth0Error, IdpResponse>(
       (options, cb) => auth.checkSession(options, cb)
     ),
-    // userInfo: taskify<string, Auth0Error, Auth0UserProfile>((accessToken, cb) =>
-    //   auth.client.userInfo(accessToken, cb)
-    // ),
-    logout: (returnTo: string) =>
-      fromIO(new IO(() => auth.logout({ returnTo }))),
+    logout: (returnTo: string) => TE.rightIO(() => auth.logout({ returnTo })),
 
     login: (options?: AuthorizeOptions) =>
-      fromIO(new IO(() => auth.authorize(options)))
+      TE.rightIO(() => auth.authorize(options)),
+  };
+}
+type OidcSettings = {
+  authority: string;
+  client_id: string;
+  redirect_uri: string;
+  response_type: string;
+  scope?: string;
+  metadata?: Partial<OidcMetadata>;
+  signingKeys?: any[];
+};
+export function OidcIdp(settings: OidcSettings): Idp {
+  const oidc = new UserManager(settings);
+
+  oidc.signinSilentCallback();
+
+  return {
+    parseHash: TE.tryCatch(
+      () =>
+        oidc.signinCallback().then((res) => {
+          const payload = getPayload(res.id_token || res.access_token);
+          return {
+            idToken: res.id_token,
+            idTokenPayload: payload,
+            accessToken: res.access_token,
+            expiresIn: res.expires_in ?? payload.exp - Date.now() / 1000,
+          };
+        }),
+      (e) => ({
+        error: "Parse Hash error",
+        errorDescription: e,
+      })
+    ),
+    checkSession: (settings: checkSessionParams) =>
+      TE.tryCatch(
+        () =>
+          oidc
+            .signinSilent({
+              resource: settings.audience,
+              scope: settings.scope,
+              extraQueryParams: settings.audience
+                ? { audience: settings.audience }
+                : {},
+            })
+            .then((res) => {
+              const payload = getPayload(res.id_token || res.access_token);
+              return {
+                idToken: res.id_token,
+                idTokenPayload: payload,
+                accessToken: res.access_token ?? res.id_token,
+                expiresIn: res.expires_in ?? payload.exp - Date.now() / 1000,
+              };
+            }),
+        (e) => ({
+          error: "Silent Refresh Fail",
+          errorDescription: e,
+        })
+      ),
+    login: () =>
+      TE.tryCatch(
+        () => oidc.signinRedirect(),
+        () => ({ error: "login failure" })
+      ),
+    logout: () =>
+      TE.tryCatch(
+        () => oidc.signoutRedirect(),
+        () => ({ error: "logout failure" })
+      ),
   };
 }
