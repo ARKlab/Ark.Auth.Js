@@ -31,14 +31,14 @@ const seqOption = sequenceT(O.option);
 export type FailuresType =
   | { type: "Callback"; error: Auth0Error }
   | { type: "SSO"; error: Auth0Error }
-  | { type: "UserInfo"; error: Auth0DecodedHash }
+  | { type: "UserInfo"; error: Auth0Error }
   | { type: "UserStore" }
   | { type: "ExpiryFailure"; result: Auth0DecodedHash };
 
 export const Failures = {
   Callback: (error: Auth0Error): FailuresType => ({ type: "Callback", error }),
   SSO: (error: Auth0Error): FailuresType => ({ type: "SSO", error }),
-  UserInfo: (error: Auth0DecodedHash): FailuresType => ({
+  UserInfo: (error: Auth0Error): FailuresType => ({
     type: "UserInfo",
     error,
   }),
@@ -60,7 +60,7 @@ export const Failures = {
       sso: (error: Auth0Error) => A;
       userStore: () => A;
       expiryFailure: (error: Auth0DecodedHash) => A;
-      userInfo: (error: Auth0DecodedHash) => A;
+      userInfo: (error: Auth0Error) => A;
     }
   ): A => {
     switch (f.type) {
@@ -152,16 +152,11 @@ export default function CreateAuthModule(
   const userInfo = (
     authResult: Auth0DecodedHash
   ): TE.TaskEither<FailuresType, Auth0UserProfile> => {
-    const checkNull = E.fromNullable(Failures.UserInfo(authResult));
-
-    return TE.fromEither(checkNull(authResult.idTokenPayload));
+    return pipe(
+      auth.userInfo(authResult.accessToken || ""),
+      TE.mapLeft(Failures.UserInfo)
+    );
   };
-
-  // for userinfo endpoint
-  // auth
-  //   .userInfo(accessToken)
-  //   .mapLeft(Failures.UserInfo)
-  //   .alt(getUser);
 
   const logout = (returnTo: string) =>
     pipe(
@@ -310,6 +305,7 @@ type Idp = {
   checkSession: (
     a: CheckSessionOptions
   ) => TE.TaskEither<{ error: string }, IdpResponse>;
+  userInfo: (accessToken: string) => TE.TaskEither<{ error: string }, any>;
   logout: (r: string) => TE.TaskEither<Auth0ParseHashError, void>;
   login: (a?: AuthorizeOptions) => TE.TaskEither<Auth0ParseHashError, void>;
 };
@@ -342,6 +338,7 @@ export function Auth0Idp(options: authModuleParams): Idp {
         )
       )
     ),
+    userInfo: getPayload,
     checkSession: TE.taskify<CheckSessionOptions, Auth0Error, IdpResponse>(
       (options, cb) => auth.checkSession(options, cb)
     ),
@@ -386,6 +383,11 @@ export function OidcIdp(settings: OidcSettings): Idp {
         errorDescription: e,
       })
     ),
+    userInfo: () =>
+      TE.tryCatch(
+        () => oidc.getUser().then((x) => x?.profile),
+        () => ({ error: "Failed userinfo" })
+      ),
     checkSession: (settings: checkSessionParams) =>
       TE.tryCatch(
         () =>
