@@ -361,7 +361,11 @@ type OidcSettings = {
   signingKeys?: any[];
 };
 export function OidcIdp(settings: OidcSettings): Idp {
-  const oidc = new UserManager(settings);
+  const oidc = new UserManager({
+    ...settings,
+    automaticSilentRenew: true,
+    includeIdTokenInSilentRenew: false,
+  });
 
   oidc.signinSilentCallback();
 
